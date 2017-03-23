@@ -1,0 +1,41 @@
+- Spanish and Dutch: 
+	CoNLL-2002
+	website: http://www.cnts.ua.ac.be/conll2002/ner/
+	data: http://www.cnts.ua.ac.be/conll2002/ner.tgz 
+
+-English and German: 
+	CoNNL-2003
+	website: http://www.cnts.ua.ac.be/conll2003/ner/
+	data: http://www.cnts.ua.ac.be/conll2003/ner.tgz
+
+-Turkish: 
+	
+
+-Czech: 
+	Czech Named Entity Corpus
+	website: http://ufal.mff.cuni.cz/cnec
+	data: https://lindat.mff.cuni.cz/repository/xmlui/bitstream/handle/11858/00-097C-0000-0023-1B22-8/Czech_Named_Entity_Corpus_2.0.zip?sequence=1&isAllowed=y
+	information:
+		Newest version of the Czech Named Entity Corpus (Czech Named Entity Corpus 2.0) is a corpus of 8993 Czech sentences with manually annotated 35220 
+		Czech named entities, classified according to a two-level hierarchy of 46 named entities.
+
+-Arabic: 
+	ANERcorp
+	website: http://curtis.ml.cmu.edu/w/courses/index.php/ANERcorp and http://users.dsic.upv.es/grupos/nle/?file=kop1.php
+	data: http://www.dsic.upv.es/~ybenajiba/resources/ANERCorp.zip
+	information: 
+		ANERcorp is a manually annotated corpus in Arabic which is created to be used in Arabic NER tasks. 
+		It consists of two parts; training and testing. 
+		It has been annotated by one person in order to guarantee the coherence of the annotation.
+		There are more than 150K tokens in the corpus and 11% of them are Named Entities. 
+		Every token in the corpus is annotated with one of the followings; person, location, organization, miscellaneous or other. 
+		The distribution of the Named Entities are given below:
+			Person : 39%
+			Location : 30.4%
+			Organization : 20.6%
+			Miscellaneous : 10%
+		The corpus consists of 316 articles which have been selected from news wire and other type web sources.
+		Before tagging the corpus, a p reprocessing had been applied to the data. In Arabic one word may written in several forms. 
+		In order to normalize these differences and decrease the data sparseness, the data had been normalized by reducing different forms of words into one form.
+
+All of the datasets are in CoNLL format and we used the CoNLL evaluation script to report phrase-level F1 scores
