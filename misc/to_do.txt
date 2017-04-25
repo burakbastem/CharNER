@@ -1,0 +1,8 @@
++ use adam with default parameters
++ update parameters after each mini-batch of 32 sentences
++ sort according to the character length
++ shuffle the order of mini-batches prior to each epoch
++ 5 BLSTM with size of 128
++ apply dropout to outputs of each layer including the input layer
++ use gradient norm clipping
++ set maximum norm of the gradients as 1

@@ -43,12 +43,12 @@ function main(args=ARGS)
 	info("$(length(data)) sentences.")
 	# sort data based on length of sentence 
 	sort!(data, by=tup->length(tup[1]))
-	# partition data into minibatches
-	batches = minibatch(data, char_dic, tag_dic, opts[:batchsize])	
 	# create model parameters
 	model_parameters = createModelParameters(opts[:hidden], length(char_dic), length(tag_dic), opts[:winit])
 	# create optimizer parameters
 	optimizer_parameter = createOptimizerParameters(model_parameters, opts[:gclip])
+	# partition data into minibatches
+	batches = minibatch(data, char_dic, tag_dic, opts[:batchsize])	
 	# create initial states and initial cells
 	initial_states = createInitialStates(opts[:hidden], opts[:batchsize])
 	initial_cells = createInitialCells(opts[:hidden], opts[:batchsize])
@@ -57,6 +57,15 @@ function main(args=ARGS)
 		shuffle!(batches)
 		train(model_parameters, optimizer_parameter, initial_states, initial_cells, batches)
 	end
+		
+	#########################
+	"
+	println(data[1][1])
+	println(data[1][2])
+	println(batches[2][1])
+	println(batches[2][2])
+	"
+	#########################
 end
 
 
@@ -183,29 +192,19 @@ end
 function minibatch(data, char_dic, tag_dic, batch_size)
 	char_dic_size = length(char_dic)
 	tag_dic_size = length(tag_dic)
-	nbatch = div(length(data), batch_size) # ! pay attention, if not divisible
 	batches = []
-	for i=1:nbatch
-		max_length = length(data[i*batch_size][1])
-		# ERROR: LoadError: MethodError: Cannot `convert` an object of type AutoGrad.Rec{Array{Float64,2}} to an object of type BitArray{2}
-		#batch = Array{Any}(max_length)[ falses(batch_size, char_dic_size) for mls=1:max_length ]
-		###
-		batch = Array{Any}(max_length)
-		tag_batch = Array{Any}(max_length)
-		for mls=1:max_length
-			batch[mls] = falses(batch_size, char_dic_size)
-			tag_batch[mls] = falses(batch_size, tag_dic_size)
+	for (sent, tagged_sent) in data
+		one_hot_sent = []
+		one_hot_tagged_sent = []
+		for c=1:length(sent)
+			x = falses(1, char_dic_size) # using BitArrays
+			x[sent[c]] = 1
+			push!(one_hot_sent, x)
+			y = falses(1, tag_dic_size) # using BitArrays
+			y[tagged_sent[c]] = 1
+			push!(one_hot_tagged_sent, y)
 		end
-		for s=1:batch_size
-			burak = data[(i-1) * batch_size + s]
-			sent = burak[1]
-			tagged_sent = burak[2]
-			for c=1:length(sent)
-				batch[c][s, sent[c]] = 1
-				tag_batch[c][s, tagged_sent[c]] = 1
-			end
-		end
-		push!(batches, (batch, tag_batch))
+		push!(batches, (one_hot_sent, one_hot_tagged_sent))
 	end
 	return batches
 end
@@ -350,6 +349,7 @@ function blstm(parameters, initial_state, initial_cell, sequence)
 	for i=length(sequence)-1:-1:1
 		backward_state, backward_cells[i] = lstm(parameters, backward_state, backward_cells[i+1], sequence[i]; backward=true)
 	end
+	# 
 	return forward_cells, backward_cells
 end
 
@@ -391,7 +391,10 @@ lossGradient = grad(loss)
 #####################################################################################################
 
 function train(model_params, optimizer_params, initial_states, initial_cells, batches)
-	for minibatch in batches	
+	for minibatch in batches
+		
+		println("minibatch[1]=",minibatch[1])	
+		println("minibatch[2]=",minibatch[2])	
 		grad_loss = lossGradient(model_params, initial_states, initial_cells, minibatch[1], minibatch[2])		
 		for i=1:length(model_params)
 			layer_model = model_params[i]
