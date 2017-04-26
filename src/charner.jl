@@ -7,17 +7,15 @@ function parse_commandline()
     s = ArgParseSettings()
     @add_arg_table s begin
         ("--datafiles"; nargs='+'; help="If provided, use first file for training, second for dev, others for test.")
-        ("--hidden"; nargs='*'; arg_type=Int; default=[128]; help="Sizes of one or more LSTM layers.")        
-        ("--epochs"; arg_type=Int; default=100; help="Number of epochs for training.")
-        ("--batchsize"; arg_type=Int; default=1; help="Number of sequences to train on in parallel.")
-        #("--seqlength"; arg_type=Int; default=25; help="Number of steps to unroll the network for.")
-        ("--decay"; arg_type=Float64; default=0.9; help="Learning rate decay.")
+        ("--hidden"; nargs='*'; arg_type=Int; default=[128; 128; 128; 128; 128]; help="Sizes of one or more LSTM layers.")        
+        ("--epochs"; arg_type=Int; default=500; help="Number of epochs for training.")
+        ("--batchsize"; arg_type=Int; default=32; help="Number of sequences to train on in parallel.")
         ("--gclip"; arg_type=Float64; default=1.0; help="Value to clip the gradient norm at.")
         ("--winit"; arg_type=Float64; default=0.1; help="Initial weights set to winit*randn().")
-        ("--gcheck"; arg_type=Int; default=0; help="Check N random gradients.")
+        #("--gcheck"; arg_type=Int; default=0; help="Check N random gradients.")
+        ("--dropout"; nargs='*'; arg_type=Float64; default=[0.0; 0.0; 0.0]; help="Dropout probability.")
         ("--seed"; arg_type=Int; default=38; help="Random number seed.")
         ("--atype"; default=(gpu()>=0 ? "KnetArray{Float32}" : "Array{Float32}"); help="array type: Array for cpu, KnetArray for gpu")
-        ("--dropout"; nargs='*'; arg_type=Float64; default=[0.0; 0.0; 0.0]; help="Dropout probability.")
     end
     return parse_args(s;as_symbols = true)        
 end
@@ -42,21 +40,24 @@ function main(args=ARGS)
 	data = getData(text, char_dic, tag_dic)
 	info("$(length(data)) sentences.")
 	# sort data based on length of sentence 
-	sort!(data, by=tup->length(tup[1]))
+	sort!(data, by=x->length(x[1]))
 	# partition data into minibatches
-	batches = minibatch(data, char_dic, tag_dic, opts[:batchsize])	
+	batches = minibatch(data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])	
 	# create model parameters
-	model_parameters = createModelParameters(opts[:hidden], length(char_dic), length(tag_dic), opts[:winit])
+	model_parameters = createModelParameters(opts[:hidden], length(char_dic), length(tag_dic), opts[:winit]; atype=opts[:atype])
 	# create optimizer parameters
-	optimizer_parameter = createOptimizerParameters(model_parameters, opts[:gclip])
+	optimizer_parameter = createOptimizerParameters(model_parameters; gclip=opts[:gclip])
 	# create initial states and initial cells
-	initial_states = createInitialStates(opts[:hidden], opts[:batchsize])
-	initial_cells = createInitialCells(opts[:hidden], opts[:batchsize])
+	initial_states = createInitialStates(opts[:hidden], opts[:batchsize]; atype=opts[:atype])
+	initial_cells = createInitialCells(opts[:hidden], opts[:batchsize]; atype=opts[:atype])
 	# train model
+	loss, accuracy = evaluate(model_parameters, initial_states, initial_cells, batches; pdrop=opts[:dropout])
+	println("epoch=", 0,", loss=", loss, ", accuracy=", accuracy)
 	for epoch=1:opts[:epochs]
 		shuffle!(batches)
-		train(model_parameters, optimizer_parameter, initial_states, initial_cells, batches)
-		println("epoch=", epoch," loss=", averageLoss(model_parameters, initial_states, initial_cells, batches))
+		train(model_parameters, optimizer_parameter, initial_states, initial_cells, batches; pdrop=opts[:dropout])
+		loss, accuracy = evaluate(model_parameters, initial_states, initial_cells, batches; pdrop=opts[:dropout])
+		println("epoch=", epoch,", loss=", loss, ", accuracy=", accuracy)
 	end
 end
 
@@ -78,7 +79,7 @@ end
 #  '.' => 9
 #
 function createCharDictionary(text)
-	char_dic = Dict{Char,Int32}()
+	char_dic = Dict()
 	char_dic[' '] = 1 # add whitespace to dictionary
 	unknown_char_value = 2
   	for entry in text
@@ -104,7 +105,7 @@ end
 #  "O" => 2
 #
 function createTagDictionary(text)
-	tag_dic = Dict{String,Int32}()	
+	tag_dic = Dict()	
 	unknown_tag_value = 1
 	for entry in text
   		if(entry != "") # if not end of sentence
@@ -181,7 +182,7 @@ end
 
 #####################################################################################################
 
-function minibatch(data, char_dic, tag_dic, batch_size)
+function minibatch(data, char_dic, tag_dic, batch_size; atype=KnetArray{Float32})
 	char_dic_size = length(char_dic)
 	tag_dic_size = length(tag_dic)
 	nbatch = div(length(data), batch_size) # ! pay attention, if not divisible
@@ -197,9 +198,9 @@ function minibatch(data, char_dic, tag_dic, batch_size)
 		tag_batch = Array{Any}(max_length)
 		mask = Array{Any}(max_length)
 		for mls=1:max_length
-			batch[mls] = falses(batch_size, char_dic_size)
-			tag_batch[mls] = falses(batch_size, tag_dic_size)
-			mask[mls] = falses(batch_size, 1) # either 0 or 1
+			batch[mls] = convert(atype, falses(batch_size, char_dic_size))
+			tag_batch[mls] = convert(atype, falses(batch_size, tag_dic_size))
+			mask[mls] = convert(atype, falses(batch_size, 1))			
 		end
 		for s=1:batch_size
 			burak = data[(i-1) * batch_size + s]
@@ -218,11 +219,10 @@ end
 
 #####################################################################################################
 
-function createModelParameters(hidden, char_dic_size, tag_dic_size, winit)
-	num_layers = length(hidden) + 1 # number of blstm layers + 1 fully connected layer for softmax
-	parameters = Array{Dict{String,Array}}(num_layers)
+function createModelParameters(hidden, char_dic_size, tag_dic_size, winit; atype=KnetArray{Float32})
+	parameters = []
 	# initialize parameters for BLSTM layers
-	for i=1:num_layers - 1
+	for i=1:length(hidden)
 		# setting input size
 		# input is a one-hot vector for the first BLSTM layer, and
 		# concatenation of forward and backward BLSTM outputs of 
@@ -232,55 +232,56 @@ function createModelParameters(hidden, char_dic_size, tag_dic_size, winit)
 			input_size = 2 * hidden[i-1]
 		end 
 		# parameters of i'th forward blstm layer 
-		layer_params = Dict{String,Array}()
-		layer_params["f_W_fx"] = randn(input_size, hidden[i]) * winit
-		layer_params["f_W_fh"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["f_w_fc"] = randn(1, hidden[i]) * winit
-		layer_params["f_b_f"] = zeros(1, hidden[i])
-		layer_params["f_W_ix"] = randn(input_size, hidden[i]) * winit
-		layer_params["f_W_ih"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["f_w_ic"] = randn(1, hidden[i]) * winit
-		layer_params["f_b_i"] = zeros(1, hidden[i])
-		layer_params["f_W_cx"] = randn(input_size, hidden[i]) * winit
-		layer_params["f_W_ch"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["f_b_c"] = zeros(1, hidden[i])
-		layer_params["f_W_ox"] = randn(input_size, hidden[i]) * winit
-		layer_params["f_W_oh"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["f_w_oc"] = randn(1, hidden[i]) * winit
-		layer_params["f_b_o"] = 	zeros(1, hidden[i])
+		layer_params = Dict()
+		layer_params["f_W_fx"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["f_W_fh"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["f_w_fc"] = convert(atype, randn(1, hidden[i]) * winit)
+		layer_params["f_b_f"] = convert(atype, zeros(1, hidden[i]))
+		layer_params["f_W_ix"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["f_W_ih"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["f_w_ic"] = convert(atype, randn(1, hidden[i]) * winit)
+		layer_params["f_b_i"] = convert(atype, zeros(1, hidden[i]))
+		layer_params["f_W_cx"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["f_W_ch"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["f_b_c"] = convert(atype, zeros(1, hidden[i]))
+		layer_params["f_W_ox"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["f_W_oh"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["f_w_oc"] = convert(atype, randn(1, hidden[i]) * winit)
+		layer_params["f_b_o"] = convert(atype, zeros(1, hidden[i]))
 		# parameters of i'th backward blstm layer
-		layer_params["b_W_fx"] = randn(input_size, hidden[i]) * winit
-		layer_params["b_W_fh"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["b_w_fc"] = randn(1, hidden[i]) * winit
-		layer_params["b_b_f"] = zeros(1, hidden[i])
-		layer_params["b_W_ix"] = randn(input_size, hidden[i]) * winit
-		layer_params["b_W_ih"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["b_w_ic"] = randn(1, hidden[i]) * winit
-		layer_params["b_b_i"] = zeros(1, hidden[i])
-		layer_params["b_W_cx"] = randn(input_size, hidden[i]) * winit
-		layer_params["b_W_ch"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["b_b_c"] = zeros(1, hidden[i])
-		layer_params["b_W_ox"] = randn(input_size, hidden[i]) * winit
-		layer_params["b_W_oh"] = randn(hidden[i], hidden[i]) * winit
-		layer_params["b_w_oc"] = randn(1, hidden[i]) * winit
-		layer_params["b_b_o"] = zeros(1, hidden[i])
-		parameters[i] = layer_params
+		layer_params["b_W_fx"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["b_W_fh"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["b_w_fc"] = convert(atype, randn(1, hidden[i]) * winit)
+		layer_params["b_b_f"] = convert(atype, zeros(1, hidden[i]))
+		layer_params["b_W_ix"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["b_W_ih"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["b_w_ic"] = convert(atype, randn(1, hidden[i]) * winit)
+		layer_params["b_b_i"] = convert(atype, zeros(1, hidden[i]))
+		layer_params["b_W_cx"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["b_W_ch"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["b_b_c"] = convert(atype, zeros(1, hidden[i]))
+		layer_params["b_W_ox"] = convert(atype, randn(input_size, hidden[i]) * winit)
+		layer_params["b_W_oh"] = convert(atype, randn(hidden[i], hidden[i]) * winit)
+		layer_params["b_w_oc"] = convert(atype, randn(1, hidden[i]) * winit)
+		layer_params["b_b_o"] = convert(atype, zeros(1, hidden[i]))
+		push!(parameters, layer_params)
 	end
 	# initialize parameters for last layer (for softmax)
-	softmax_parameters = Dict{String,Array}()
-	softmax_parameters["W"] = randn(2 * hidden[end], tag_dic_size) * winit
-	softmax_parameters["b"] = zeros(1, tag_dic_size)
-	parameters[end] = softmax_parameters
+	softmax_params = Dict()
+	softmax_params["W"] = convert(atype, randn(2 * hidden[end], tag_dic_size) * winit)
+	softmax_params["b"] = convert(atype, zeros(1, tag_dic_size))
+	push!(parameters, softmax_params)
+	prms = parameters[1]
 	return parameters
 end
 
 #####################################################################################################
 # creates initial states (h_t-1 or h_t+1) for BLSTM layers
 
-function createInitialStates(hidden, batch_size)
+function createInitialStates(hidden, batch_size; atype=KnetArray{Float32})
 	initial_states = []
 	for i=1:length(hidden)
-		push!(initial_states, zeros(batch_size, hidden[i]))
+		push!(initial_states, convert(atype, zeros(batch_size, hidden[i])))
 	end
 	return initial_states
 end
@@ -288,10 +289,10 @@ end
 #####################################################################################################
 # creates initial cells (c_t-1 or c_t+1) for BLSTM layers
 
-function	createInitialCells(hidden, batch_size)
+function	createInitialCells(hidden, batch_size; atype=KnetArray{Float32})
 	initial_cells = []
 	for i=1:length(hidden)
-		push!(initial_cells, zeros(batch_size, hidden[i]))
+		push!(initial_cells, convert(atype, zeros(batch_size, hidden[i])))
 	end
 	return initial_cells
 end
@@ -299,14 +300,14 @@ end
 # creates parameters for stochastic optimization algorithm (SOA)
 # uses Adam Algorithm and default algorithm parameters
 
-function createOptimizerParameters(model_parameters, gclip)
-	params = Array{Any}(length(model_parameters))
+function createOptimizerParameters(model_parameters; gclip=0)
+	params = []
 	for i=1:length(model_parameters)
 	layer_params = Dict()
 		for key in keys(model_parameters[i])
 			layer_params[key] = Adam(; gclip=gclip)
 		end
-	params[i] = layer_params
+	push!(params, layer_params)
 	end
 	return params
 end
@@ -332,7 +333,7 @@ function lstm(prms, h_t_1, c_t_1, x_t; backward=false)
 	d = "f_"
 	if(backward)
 		d = "b_"
-	end		
+	end
 	f_t = sigm(x_t * prms[d*"W_fx"] + h_t_1 * prms[d*"W_fh"] + prms[d*"w_fc"] .* c_t_1 .+ prms[d*"b_f"])
 	i_t = sigm(x_t * prms[d*"W_ix"] + h_t_1 * prms[d*"W_ih"] + prms[d*"w_ic"] .* c_t_1 .+ prms[d*"b_i"])
 	c_t = f_t .* c_t_1 + i_t .* tanh(x_t * prms[d*"W_cx"] + h_t_1 * prms[d*"W_ch"] .+ prms[d*"b_c"])
@@ -343,31 +344,31 @@ end
 
 #####################################################################################################
 
-function blstm(parameters, initial_state, initial_cell, sequence)
+function blstm(parameters, initial_hidden, initial_cell, sequence)
 	# forward lstm
-	forward_cells = Array{Any}(length(sequence))
-	forward_state, forward_cells[1] = lstm(parameters, initial_state, initial_cell, sequence[1])
+	forward_hiddens = Array{Any}(length(sequence))
+	forward_hiddens[1], forward_cell = lstm(parameters, initial_hidden, initial_cell, sequence[1])
 	for i=2:length(sequence)
-		forward_state, forward_cells[i] = lstm(parameters, forward_state, forward_cells[i-1], sequence[i])
+		forward_hiddens[i], forward_cell = lstm(parameters, forward_hiddens[i-1], forward_cell, sequence[i])
 	end
 	# backward lstm
-	backward_cells = Array{Any}(length(sequence))
-	backward_state, backward_cells[end] = lstm(parameters, initial_state, initial_cell, sequence[end]; backward=true)
+	backward_hiddens = Array{Any}(length(sequence))
+	backward_hiddens[end], backward_cell = lstm(parameters, initial_hidden, initial_cell, sequence[end]; backward=true)
 	for i=length(sequence)-1:-1:1
-		backward_state, backward_cells[i] = lstm(parameters, backward_state, backward_cells[i+1], sequence[i]; backward=true)
+		backward_hiddens[i], backward_cell = lstm(parameters, backward_hiddens[i+1], backward_cell, sequence[i]; backward=true)
 	end
-	return forward_cells, backward_cells
+	return forward_hiddens, backward_hiddens
 end
 
 #####################################################################################################
 
-function predict(parameters, initial_states, initial_cells, sequence, mask; pdrop=[0.0 0.0 0.0])
+function predict(parameters, initial_hiddens, initial_cells, sequence, mask; pdrop=[0.0 0.0 0.0])
 	seq = copy(sequence)
 	for i=1:length(parameters)-1
 		map!(x -> dropout(x, pdrop[1]), seq)
-		forward_cells, backward_cells = blstm(parameters[i], initial_states[i], initial_cells[i], seq)
+		forward_hiddens, backward_hiddens = blstm(parameters[i], initial_hiddens[i], initial_cells[i], seq)
 		for j=1:length(seq)
-			seq[j] = hcat(dropout(forward_cells[j], pdrop[2]), dropout(backward_cells[j], pdrop[3])) .* mask[j]
+			seq[j] = hcat(dropout(forward_hiddens[j], pdrop[2]), dropout(backward_hiddens[j], pdrop[3])) .* mask[j]
 		end
 	end
 	last_layer = parameters[end]
@@ -379,15 +380,14 @@ end
 
 #####################################################################################################
 
-function loss(parameters, initial_states, initial_cells, sequence, ygold, mask)
-    total = 0.0; count = 0
-    ypred = predict(parameters, initial_states, initial_cells, sequence, mask)
+function loss(parameters, initial_hiddens, initial_cells, sequence, ygold, mask; pdrop=[0.0 0.0 0.0])
+    total = 0.0
+    ypred = predict(parameters, initial_hiddens, initial_cells, sequence, mask; pdrop=pdrop)
     for i=1:length(sequence)
         ynorm = logp(ypred[i], 2) # ypred .- log(sum(exp(ypred),2))
         total += sum(ygold[i] .* ynorm)
-        count += sum(ygold[i])
     end
-    return -total / count
+    return -total
 end
 
 #####################################################################################################
@@ -396,10 +396,10 @@ lossGradient = grad(loss)
 
 #####################################################################################################
 
-function train(model_params, optimizer_params, initial_states, initial_cells, batches)
+function train(model_params, optimizer_params, initial_hiddens, initial_cells, batches; pdrop=[0.0 0.0 0.0])
 	for minibatch in batches	
-		grad_loss = lossGradient(model_params, initial_states, initial_cells, minibatch[1], minibatch[2], minibatch[3])		
-		# @show gradcheck(loss, model_params, initial_states, initial_cells, minibatch[1], minibatch[2], minibatch[3]; verbose=true, atol=0.01)
+		grad_loss = lossGradient(model_params, initial_hiddens, initial_cells, minibatch[1], minibatch[2], minibatch[3]; pdrop=pdrop)		
+		# @show gradcheck(loss, model_params, initial_cells, initial_hiddens, minibatch[1], minibatch[2], minibatch[3]; verbose=true, atol=0.01)
 		for i=1:length(model_params)
 			layer_model = model_params[i]
 			layer_grad_loss = grad_loss[i]
@@ -413,14 +413,32 @@ function train(model_params, optimizer_params, initial_states, initial_cells, ba
 end
 
 #####################################################################################################
-
-function averageLoss(model_params, initial_states, initial_cells, batches)
-	total = 0.0;
+function evaluate(model_params, initial_hiddens, initial_cells, batches; pdrop=[0.0 0.0 0.0])
+	total_loss = 0.0
+	total_correct = 0
+	total_count = 0
 	for minibatch in batches
-		total += loss(model_params, initial_states, initial_cells, minibatch[1], minibatch[2], minibatch[3])
+		x = minibatch[1]
+		ygold = minibatch[2]
+		mask = minibatch[3]	
+		minibatch_total_loss = 0.0
+		minibatch_total_correct = 0
+		minibatch_count = 0
+		ypred = predict(model_params, initial_hiddens, initial_cells, x, mask; pdrop=pdrop)
+		for i=1:length(x)
+			ynorm = logp(ypred[i], 2) # ypred .- log(sum(exp(ypred),2))
+			minibatch_total_loss += sum(ygold[i] .* ynorm)			
+			minibatch_total_correct += sum(ygold[i] .* (ypred[i] .== maximum(ypred[i],1)))
+			minibatch_count += sum(ygold[i])		
+		end
+		total_loss += minibatch_total_loss
+		total_correct += minibatch_total_correct
+		total_count += minibatch_count
 	end
-	return total/length(batches)
+	softmax_loss = -total_loss/length(batches)
+	accuracy = total_correct/total_count
+	return softmax_loss, accuracy
 end
-
 #####################################################################################################
+
 main()
