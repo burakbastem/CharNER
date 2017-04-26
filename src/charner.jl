@@ -8,7 +8,7 @@ function parse_commandline()
     @add_arg_table s begin
         ("--datafiles"; nargs='+'; help="If provided, use first file for training, second for dev, others for test.")
         ("--hidden"; nargs='*'; arg_type=Int; default=[128]; help="Sizes of one or more LSTM layers.")        
-        ("--epochs"; arg_type=Int; default=1; help="Number of epochs for training.")
+        ("--epochs"; arg_type=Int; default=100; help="Number of epochs for training.")
         ("--batchsize"; arg_type=Int; default=1; help="Number of sequences to train on in parallel.")
         #("--seqlength"; arg_type=Int; default=25; help="Number of steps to unroll the network for.")
         ("--decay"; arg_type=Float64; default=0.9; help="Learning rate decay.")
@@ -56,6 +56,7 @@ function main(args=ARGS)
 	for epoch=1:opts[:epochs]
 		shuffle!(batches)
 		train(model_parameters, optimizer_parameter, initial_states, initial_cells, batches)
+		println("epoch=", epoch," loss=", averageLoss(model_parameters, initial_states, initial_cells, batches))
 	end
 end
 
@@ -187,14 +188,18 @@ function minibatch(data, char_dic, tag_dic, batch_size)
 	batches = []
 	for i=1:nbatch
 		max_length = length(data[i*batch_size][1])
-		# ERROR: LoadError: MethodError: Cannot `convert` an object of type AutoGrad.Rec{Array{Float64,2}} to an object of type BitArray{2}
-		#batch = Array{Any}(max_length)[ falses(batch_size, char_dic_size) for mls=1:max_length ]
-		###
+		#########################
+		# following line gives this errror:
+		#ERROR: LoadError: MethodError: Cannot `convert` an object of type AutoGrad.Rec{Array{Float64,2}} to an object of type BitArray{2}
+		#batch = [ falses(batch_size, char_dic_size) for mls=1:max_length ]
+		#########################
 		batch = Array{Any}(max_length)
 		tag_batch = Array{Any}(max_length)
+		mask = Array{Any}(max_length)
 		for mls=1:max_length
 			batch[mls] = falses(batch_size, char_dic_size)
 			tag_batch[mls] = falses(batch_size, tag_dic_size)
+			mask[mls] = falses(batch_size, 1) # either 0 or 1
 		end
 		for s=1:batch_size
 			burak = data[(i-1) * batch_size + s]
@@ -203,9 +208,10 @@ function minibatch(data, char_dic, tag_dic, batch_size)
 			for c=1:length(sent)
 				batch[c][s, sent[c]] = 1
 				tag_batch[c][s, tagged_sent[c]] = 1
+				mask[c] = 1
 			end
 		end
-		push!(batches, (batch, tag_batch))
+		push!(batches, (batch, tag_batch, mask))
 	end
 	return batches
 end
@@ -257,7 +263,7 @@ function createModelParameters(hidden, char_dic_size, tag_dic_size, winit)
 		layer_params["b_W_ox"] = randn(input_size, hidden[i]) * winit
 		layer_params["b_W_oh"] = randn(hidden[i], hidden[i]) * winit
 		layer_params["b_w_oc"] = randn(1, hidden[i]) * winit
-		layer_params["b_b_o"] = 	zeros(1, hidden[i])
+		layer_params["b_b_o"] = zeros(1, hidden[i])
 		parameters[i] = layer_params
 	end
 	# initialize parameters for last layer (for softmax)
@@ -355,13 +361,13 @@ end
 
 #####################################################################################################
 
-function predict(parameters, initial_states, initial_cells, sequence, pdrop=[0.0 0.0 0.0])
+function predict(parameters, initial_states, initial_cells, sequence, mask; pdrop=[0.0 0.0 0.0])
 	seq = copy(sequence)
 	for i=1:length(parameters)-1
 		map!(x -> dropout(x, pdrop[1]), seq)
 		forward_cells, backward_cells = blstm(parameters[i], initial_states[i], initial_cells[i], seq)
 		for j=1:length(seq)
-			seq[j] = hcat(dropout(forward_cells[j], pdrop[2]), dropout(backward_cells[j], pdrop[3]))
+			seq[j] = hcat(dropout(forward_cells[j], pdrop[2]), dropout(backward_cells[j], pdrop[3])) .* mask[j]
 		end
 	end
 	last_layer = parameters[end]
@@ -373,13 +379,13 @@ end
 
 #####################################################################################################
 
-function loss(parameters, initial_states, initial_cells, sequence, ygold)
+function loss(parameters, initial_states, initial_cells, sequence, ygold, mask)
     total = 0.0; count = 0
-    ypred = predict(parameters, initial_states, initial_cells, sequence)
+    ypred = predict(parameters, initial_states, initial_cells, sequence, mask)
     for i=1:length(sequence)
         ynorm = logp(ypred[i], 2) # ypred .- log(sum(exp(ypred),2))
         total += sum(ygold[i] .* ynorm)
-        count += size(ygold,1)
+        count += sum(ygold[i])
     end
     return -total / count
 end
@@ -392,7 +398,8 @@ lossGradient = grad(loss)
 
 function train(model_params, optimizer_params, initial_states, initial_cells, batches)
 	for minibatch in batches	
-		grad_loss = lossGradient(model_params, initial_states, initial_cells, minibatch[1], minibatch[2])		
+		grad_loss = lossGradient(model_params, initial_states, initial_cells, minibatch[1], minibatch[2], minibatch[3])		
+		# @show gradcheck(loss, model_params, initial_states, initial_cells, minibatch[1], minibatch[2], minibatch[3]; verbose=true, atol=0.01)
 		for i=1:length(model_params)
 			layer_model = model_params[i]
 			layer_grad_loss = grad_loss[i]
@@ -407,4 +414,13 @@ end
 
 #####################################################################################################
 
+function averageLoss(model_params, initial_states, initial_cells, batches)
+	total = 0.0;
+	for minibatch in batches
+		total += loss(model_params, initial_states, initial_cells, minibatch[1], minibatch[2], minibatch[3])
+	end
+	return total/length(batches)
+end
+
+#####################################################################################################
 main()

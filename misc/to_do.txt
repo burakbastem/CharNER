@@ -6,3 +6,7 @@
 + apply dropout to outputs of each layer including the input layer
 + use gradient norm clipping
 + set maximum norm of the gradients as 1
++ implement mask for dummy characters
+- implement gpu version
+
++ add gitignore for ner data
