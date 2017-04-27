@@ -8,7 +8,7 @@ function parse_commandline()
     @add_arg_table s begin
         ("--datafiles"; nargs='+'; help="If provided, use first file for training, second for dev, others for test.")
         ("--hidden"; nargs='*'; arg_type=Int; default=[128; 128; 128; 128; 128]; help="Sizes of one or more LSTM layers.")        
-        ("--epochs"; arg_type=Int; default=500; help="Number of epochs for training.")
+        ("--epochs"; arg_type=Int; default=600; help="Number of epochs for training.")
         ("--batchsize"; arg_type=Int; default=32; help="Number of sequences to train on in parallel.")
         ("--gclip"; arg_type=Float64; default=1.0; help="Value to clip the gradient norm at.")
         ("--winit"; arg_type=Float64; default=0.1; help="Initial weights set to winit*randn().")
@@ -382,12 +382,14 @@ end
 
 function loss(parameters, initial_hiddens, initial_cells, sequence, ygold, mask; pdrop=[0.0 0.0 0.0])
     total = 0.0
+    count = 0
     ypred = predict(parameters, initial_hiddens, initial_cells, sequence, mask; pdrop=pdrop)
     for i=1:length(sequence)
         ynorm = logp(ypred[i], 2) # ypred .- log(sum(exp(ypred),2))
         total += sum(ygold[i] .* ynorm)
+        count += sum(ygold[i])
     end
-    return -total
+    return -total / count
 end
 
 #####################################################################################################
@@ -428,14 +430,14 @@ function evaluate(model_params, initial_hiddens, initial_cells, batches; pdrop=[
 		for i=1:length(x)
 			ynorm = logp(ypred[i], 2) # ypred .- log(sum(exp(ypred),2))
 			minibatch_total_loss += sum(ygold[i] .* ynorm)			
-			minibatch_total_correct += sum(ygold[i] .* (ypred[i] .== maximum(ypred[i],1)))
+			minibatch_total_correct += sum(ygold[i] .* (ypred[i] .== maximum(ypred[i],2)))
 			minibatch_count += sum(ygold[i])		
 		end
-		total_loss += minibatch_total_loss
+		total_loss += -minibatch_total_loss / minibatch_count
 		total_correct += minibatch_total_correct
 		total_count += minibatch_count
 	end
-	softmax_loss = -total_loss/length(batches)
+	softmax_loss = total_loss/length(batches)
 	accuracy = total_correct/total_count
 	return softmax_loss, accuracy
 end
