@@ -13,8 +13,9 @@ function parse_commandline()
         ("--gclip"; arg_type=Float64; default=1.0; help="Value to clip the gradient norm at.")
         ("--winit"; arg_type=Float64; default=0.1; help="Initial weights set to winit*randn().")
         #("--gcheck"; arg_type=Int; default=0; help="Check N random gradients.")
-        ("--dropout"; nargs='*'; arg_type=Float64; default=[0.0; 0.0; 0.0]; help="Dropout probability.")
+        ("--dropout"; nargs='*'; arg_type=Float64; default=[0.2; 0.3; 0.3; 0.3; 0.3; 0.3]; help="Dropout probability.")
         ("--seed"; arg_type=Int; default=38; help="Random number seed.")
+        ("--gpu"; arg_type=Int; default=0; help="Selected GPU.")
         ("--atype"; default=(gpu()>=0 ? "KnetArray{Float32}" : "Array{Float32}"); help="array type: Array for cpu, KnetArray for gpu")
     end
     return parse_args(s;as_symbols = true)        
@@ -24,25 +25,32 @@ function main(args=ARGS)
    opts = parse_commandline()
    println("opts=",[(k,v) for (k,v) in opts]...)
    opts[:seed] > 0 && srand(opts[:seed])
-   opts[:atype] = eval(parse(opts[:atype]))    
+   opts[:atype] = eval(parse(opts[:atype]))
+   # select the gpu
+   gpu(opts[:gpu])
    # read text and report lengths
    text = map((@compat readstring), opts[:datafiles])
-   !isempty(text) && info("Chars read: $(map((f,c)->(basename(f),length(c)),opts[:datafiles],text))")
+   !isempty(text) && info("Chars read: $(map((f,c)->(basename(f),length(c)),opts[:datafiles],text))") 
    # split text into entries
-   text = split(text[1], '\n')
+   train_text = split(text[1], '\n')
+   test_text = split(text[2], '\n')
    # create character dictionary and report
-	char_dic = createCharDictionary(text) 
+	char_dic = createCharDictionary(train_text) 
 	info("$(length(char_dic)) unique characters.")	
    # create tag dictionary and report
-	tag_dic = createTagDictionary(text)	
+	tag_dic = createTagDictionary(train_text)	
 	info("$(length(tag_dic)) unique tags.")	
    # create data which consists of (sentence, tagged_sentence) tuples
-	data = getData(text, char_dic, tag_dic)
-	info("$(length(data)) sentences.")
+	train_data = getData(train_text, char_dic, tag_dic)
+	test_data  = getData(test_text, char_dic, tag_dic)
+	info("$(length(train_data)) sentences in train data.")
+	info("$(length(test_data)) sentences in train data.")
 	# sort data based on length of sentence 
-	sort!(data, by=x->length(x[1]))
+	sort!(train_data, by=x->length(x[1]))
+	sort!(test_data, by=x->length(x[1]))
 	# partition data into minibatches
-	batches = minibatch(data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])	
+	train_batches = minibatch(train_data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])
+	test_batches = minibatch(test_data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])
 	# create model parameters
 	model_parameters = createModelParameters(opts[:hidden], length(char_dic), length(tag_dic), opts[:winit]; atype=opts[:atype])
 	# create optimizer parameters
@@ -51,17 +59,13 @@ function main(args=ARGS)
 	initial_states = createInitialStates(opts[:hidden], opts[:batchsize]; atype=opts[:atype])
 	initial_cells = createInitialCells(opts[:hidden], opts[:batchsize]; atype=opts[:atype])
 	# train model
-	loss, accuracy = evaluate(model_parameters, initial_states, initial_cells, batches; pdrop=opts[:dropout])
-	println("epoch=", 0,", loss=", loss, ", accuracy=", accuracy)
+	println("epoch=", 0,",train(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, train_batches; pdrop=opts[:dropout]), ",test(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, test_batches; pdrop=opts[:dropout]))
 	for epoch=1:opts[:epochs]
-		shuffle!(batches)
-		train(model_parameters, optimizer_parameter, initial_states, initial_cells, batches; pdrop=opts[:dropout])
-		loss, accuracy = evaluate(model_parameters, initial_states, initial_cells, batches; pdrop=opts[:dropout])
-		println("epoch=", epoch,", loss=", loss, ", accuracy=", accuracy)
+		shuffle!(train_batches)
+		train(model_parameters, optimizer_parameter, initial_states, initial_cells, train_batches; pdrop=opts[:dropout])
+		println("epoch=", epoch,", train(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, train_batches; pdrop=opts[:dropout]), ", test(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, test_batches; pdrop=opts[:dropout]))
 	end
 end
-
-
 
 #####################################################################################################
 # creates dictionary for all the characters in entries of given text
@@ -362,13 +366,13 @@ end
 
 #####################################################################################################
 
-function predict(parameters, initial_hiddens, initial_cells, sequence, mask; pdrop=[0.0 0.0 0.0])
+function predict(parameters, initial_hiddens, initial_cells, sequence, mask; pdrop=[0 0 0 0 0])
 	seq = copy(sequence)
 	for i=1:length(parameters)-1
 		map!(x -> dropout(x, pdrop[1]), seq)
 		forward_hiddens, backward_hiddens = blstm(parameters[i], initial_hiddens[i], initial_cells[i], seq)
 		for j=1:length(seq)
-			seq[j] = hcat(dropout(forward_hiddens[j], pdrop[2]), dropout(backward_hiddens[j], pdrop[3])) .* mask[j]
+			seq[j] = dropout(hcat(forward_hiddens[j], backward_hiddens[j]), pdrop[i]) .* mask[j]
 		end
 	end
 	last_layer = parameters[end]
@@ -380,7 +384,7 @@ end
 
 #####################################################################################################
 
-function loss(parameters, initial_hiddens, initial_cells, sequence, ygold, mask; pdrop=[0.0 0.0 0.0])
+function loss(parameters, initial_hiddens, initial_cells, sequence, ygold, mask; pdrop=[0 0 0 0 0])
     total = 0.0
     count = 0
     ypred = predict(parameters, initial_hiddens, initial_cells, sequence, mask; pdrop=pdrop)
@@ -415,7 +419,7 @@ function train(model_params, optimizer_params, initial_hiddens, initial_cells, b
 end
 
 #####################################################################################################
-function evaluate(model_params, initial_hiddens, initial_cells, batches; pdrop=[0.0 0.0 0.0])
+function evaluate(model_params, initial_hiddens, initial_cells, batches; pdrop=[0 0 0 0 0])
 	total_loss = 0.0
 	total_correct = 0
 	total_count = 0
