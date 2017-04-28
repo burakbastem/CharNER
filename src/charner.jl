@@ -33,7 +33,8 @@ function main(args=ARGS)
    !isempty(text) && info("Chars read: $(map((f,c)->(basename(f),length(c)),opts[:datafiles],text))") 
    # split text into entries
    train_text = split(text[1], '\n')
-   test_text = split(text[2], '\n')
+   dev_text = split(text[2], '\n')
+   test_text = split(text[3], '\n')
    # create character dictionary and report
 	char_dic = createCharDictionary(train_text) 
 	info("$(length(char_dic)) unique characters.")	
@@ -42,14 +43,18 @@ function main(args=ARGS)
 	info("$(length(tag_dic)) unique tags.")	
    # create data which consists of (sentence, tagged_sentence) tuples
 	train_data = getData(train_text, char_dic, tag_dic)
+	dev_data  = getData(dev_text, char_dic, tag_dic)
 	test_data  = getData(test_text, char_dic, tag_dic)
 	info("$(length(train_data)) sentences in train data.")
-	info("$(length(test_data)) sentences in train data.")
+	info("$(length(dev_data)) sentences in development data.")
+	info("$(length(test_data)) sentences in test data.")
 	# sort data based on length of sentence 
 	sort!(train_data, by=x->length(x[1]))
+	sort!(dev_data, by=x->length(x[1]))
 	sort!(test_data, by=x->length(x[1]))
 	# partition data into minibatches
 	train_batches = minibatch(train_data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])
+	dev_batches = minibatch(dev_data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])
 	test_batches = minibatch(test_data, char_dic, tag_dic, opts[:batchsize]; atype=opts[:atype])
 	# create model parameters
 	model_parameters = createModelParameters(opts[:hidden], length(char_dic), length(tag_dic), opts[:winit]; atype=opts[:atype])
@@ -59,11 +64,11 @@ function main(args=ARGS)
 	initial_states = createInitialStates(opts[:hidden], opts[:batchsize]; atype=opts[:atype])
 	initial_cells = createInitialCells(opts[:hidden], opts[:batchsize]; atype=opts[:atype])
 	# train model
-	println("epoch=", 0,",train(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, train_batches; pdrop=opts[:dropout]), ",test(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, test_batches; pdrop=opts[:dropout]))
+	printResults(0, model_parameters, initial_states, initial_cells, opts[:dropout], train_batches, dev_batches, test_batches; header=true)
 	for epoch=1:opts[:epochs]
 		shuffle!(train_batches)
 		train(model_parameters, optimizer_parameter, initial_states, initial_cells, train_batches; pdrop=opts[:dropout])
-		println("epoch=", epoch,", train(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, train_batches; pdrop=opts[:dropout]), ", test(loss,accuracy)=", evaluate(model_parameters, initial_states, initial_cells, test_batches; pdrop=opts[:dropout]))
+		printResults(epoch, model_parameters, initial_states, initial_cells, opts[:dropout], train_batches, dev_batches, test_batches)
 	end
 end
 
@@ -446,5 +451,18 @@ function evaluate(model_params, initial_hiddens, initial_cells, batches; pdrop=[
 	return softmax_loss, accuracy
 end
 #####################################################################################################
+
+function printResults(epoch, model_parameters, initial_states, initial_cells, pdrop, train_batches, dev_batches, test_batches; header=false)
+   if header
+      println("\tepoch\t\tloss\t\t\taccuracy")
+   end
+   l, a = evaluate(model_parameters, initial_states, initial_cells, train_batches; pdrop=pdrop)
+	println("train\t", epoch,"\t\t", l, "\t", a)
+	l, a = evaluate(model_parameters, initial_states, initial_cells, dev_batches; pdrop=pdrop)
+	println("dev\t", epoch,"\t\t", l, "\t", a)
+	l, a = evaluate(model_parameters, initial_states, initial_cells, test_batches; pdrop=pdrop)
+	println("test\t", epoch,"\t\t", l, "\t", a)
+	println()
+end
 
 main()
