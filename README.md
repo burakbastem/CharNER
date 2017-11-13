@@ -1,6 +1,6 @@
 # CharNER: Character-Level Named Entity Recognition
 
-This work reimplements a model from [[1]] for Named Entity Recognition (NER).
+This work reimplements a neural network model from [[1]] for Named Entity Recognition (NER).
 
 In [[1]], researchers introduce a model for NER. 
 As a contribution, the model eliminates the need for feature engineering and external resources, and uses only labeled data. 
